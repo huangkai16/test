@@ -1,8 +1,8 @@
 # python-aligned-detect
 
-独立 Android 工具，基于 `zrapp` 中 `PythonAlignedPreprocessInstrumentedTest` 的前处理与 YOLO 推理逻辑。
+独立 Android 工具，前处理与 YOLO 推理逻辑。
 
-**位置**：与 `zrapp` 同级目录 `../python-aligned-detect`
+**位置**：python-aligned-detect
 
 ## 功能
 
@@ -28,9 +28,9 @@ const val DEFAULT_MODEL_ASSET = "chef.tflite"
 const val DEFAULT_IMAGE_ASSET = "test.jpg"
 ```
 
-更换资源时：替换 `assets` 中对应文件 → 重新编译安装即可。若要改文件名，修改上述常量后重编。
+更换资源时：替换 `assets` 中对应文件 → 重新编译安装（或 `git add` 后提交推送）即可。若要改文件名，修改上述常量后重编。
 
-> 模型文件通常较大，建议用 Git LFS 或在 `.gitignore` 中忽略，本地自行放置。
+> 模型文件可能较大；若 push 失败或仓库变慢，可考虑 [Git LFS](https://git-lfs.com/)。
 
 ## 使用流程
 
@@ -85,7 +85,7 @@ cd /Users/huangkai/Documents/zr/python-aligned-detect
 ```
 python-aligned-detect/
   app/src/main/
-    assets/         # chef.tflite、test.jpg（需自行放入）
+    assets/         # chef.tflite、test.jpg（可提交到 Git）
     java/com/zhongrong/pythonaligned/
       model/        # 前处理、TFLite 检测、Runner
       ui/           # Compose 界面
