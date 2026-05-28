@@ -1,0 +1,23 @@
+*.iml
+.gradle/
+.kotlin/
+/local.properties
+/.idea/
+.DS_Store
+/build/
+/app/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.ap_
+*.aab
+*.dylib
+
+# 模型与测试图体积较大，本地自行放入 assets
+app/src/main/assets/*.tflite
+app/src/main/assets/*.jpg
+app/src/main/assets/*.jpeg
+app/src/main/assets/*.png
+app/src/main/assets/*.webp
+!app/src/main/assets/.gitkeep
