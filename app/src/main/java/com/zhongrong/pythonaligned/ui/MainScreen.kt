@@ -131,7 +131,13 @@ fun MainScreen(viewModel: MainViewModel) {
                 }
             }
 
-            state.previewBitmap?.let { PreviewCard(it) }
+            val displayBitmap = state.resultBitmap ?: state.previewBitmap
+            displayBitmap?.let {
+                PreviewCard(
+                    bitmap = it,
+                    title = if (state.resultBitmap != null) "检测结果（NMS 框已映射回原图）" else "原图预览",
+                )
+            }
 
             state.errorMessage?.let {
                 Text(it, color = MaterialTheme.colorScheme.error)
@@ -173,15 +179,23 @@ private fun ThresholdField(
 }
 
 @Composable
-private fun PreviewCard(bitmap: Bitmap) {
+private fun PreviewCard(bitmap: Bitmap, title: String) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Image(
-            bitmap = bitmap.asImageBitmap(),
-            contentDescription = "已选图片",
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(220.dp),
-            contentScale = ContentScale.Fit,
-        )
+        Column {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp),
+            )
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = title,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(280.dp)
+                    .padding(16.dp),
+                contentScale = ContentScale.Fit,
+            )
+        }
     }
 }

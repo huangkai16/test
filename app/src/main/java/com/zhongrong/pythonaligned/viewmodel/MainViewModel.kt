@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zhongrong.pythonaligned.PythonAlignedApplication
 import com.zhongrong.pythonaligned.model.DetectConfig
+import com.zhongrong.pythonaligned.model.DetectionOverlayDrawer
 import com.zhongrong.pythonaligned.model.PythonAlignedDetectRunner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +27,7 @@ data class MainUiState(
     val imageUri: Uri? = null,
     val imageLabel: String? = null,
     val previewBitmap: Bitmap? = null,
+    val resultBitmap: Bitmap? = null,
     val confThreshold: Float = 0.3f,
     val iouThreshold: Float = 0.5f,
     val maxDetections: Int = 50,
@@ -49,8 +51,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onModelSelected(uri: Uri) {
         viewModelScope.launch {
-            _uiState.update {
-                it.copy(modelUri = uri, modelError = null, modelReady = false, resultLines = emptyList())
+            _uiState.update { old ->
+                old.resultBitmap?.recycle()
+                old.copy(
+                    modelUri = uri,
+                    modelError = null,
+                    modelReady = false,
+                    resultLines = emptyList(),
+                    resultBitmap = null,
+                )
             }
             val error = withContext(Dispatchers.IO) { runner.loadModelFromUri(uri) }
             _uiState.update {
@@ -70,8 +79,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onImageSelected(uri: Uri) {
         viewModelScope.launch {
-            _uiState.update {
-                it.copy(imageUri = uri, errorMessage = null, resultLines = emptyList())
+            _uiState.update { old ->
+                old.resultBitmap?.recycle()
+                old.copy(imageUri = uri, errorMessage = null, resultLines = emptyList(), resultBitmap = null)
             }
             val bitmap = loadBitmap(uri)
             if (bitmap == null) {
@@ -81,7 +91,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val label = uri.lastPathSegment ?: uri.toString()
             _uiState.update { old ->
                 old.previewBitmap?.recycle()
-                old.copy(previewBitmap = bitmap, imageLabel = label)
+                old.resultBitmap?.recycle()
+                old.copy(previewBitmap = bitmap, imageLabel = label, resultBitmap = null)
             }
         }
     }
@@ -118,12 +129,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         _uiState.update { old ->
             old.previewBitmap?.recycle()
+            old.resultBitmap?.recycle()
             old.copy(
                 modelReady = runner.modelReady,
                 modelPath = runner.modelPath,
                 modelInfo = if (runner.modelReady) runner.modelInfo() else "",
                 modelError = modelError,
                 previewBitmap = bitmap,
+                resultBitmap = null,
                 imageLabel = PythonAlignedDetectRunner.DEFAULT_IMAGE_ASSET,
                 errorMessage = imageError,
                 resultLines = emptyList(),
@@ -147,13 +160,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             highlightConfMin = state.highlightConfMin,
         )
 
-        _uiState.update { it.copy(isRunning = true, errorMessage = null, resultLines = emptyList()) }
+        _uiState.update { it.copy(isRunning = true, errorMessage = null, resultLines = emptyList(), resultBitmap = null) }
         try {
             val result = withContext(Dispatchers.IO) {
                 runner.run(bitmap, state.imageLabel ?: "picked", config)
             }
-            _uiState.update {
-                it.copy(isRunning = false, resultLines = result.toResultLines())
+            val annotated = withContext(Dispatchers.IO) {
+                DetectionOverlayDrawer.draw(
+                    source = bitmap,
+                    detections = result.allDetections,
+                    highlightConfMin = config.highlightConfMin,
+                )
+            }
+            _uiState.update { old ->
+                old.resultBitmap?.recycle()
+                old.copy(
+                    isRunning = false,
+                    resultLines = result.toResultLines(),
+                    resultBitmap = annotated,
+                )
             }
         } catch (e: Exception) {
             _uiState.update {
@@ -170,6 +195,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         _uiState.value.previewBitmap?.recycle()
+        _uiState.value.resultBitmap?.recycle()
         super.onCleared()
     }
 }
