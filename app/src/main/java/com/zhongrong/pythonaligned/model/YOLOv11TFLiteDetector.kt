@@ -65,8 +65,9 @@ class YOLOv11TFLiteDetector {
         if (!isInitialized) return emptyList()
 
         return try {
-            val (inputBuffer, originalSize, _) = preprocessBitmapPythonAligned(bitmap, inputSize)
-
+//            val (inputBuffer, originalSize, _) = preprocessBitmapPythonAligned(bitmap, inputSize)
+            val result = letterbox(bitmap, inputSize, inputSize)
+            val inputBuffer = result.buffer
             val output = Array(1) {
                 Array(4 + numClasses) { FloatArray(numDetections) }
             }
@@ -77,7 +78,7 @@ class YOLOv11TFLiteDetector {
 
             postprocess(
                 output[0],
-                originalSize,
+                result,
                 confThreshold,
                 iouThreshold,
                 maxDetections,
@@ -89,14 +90,14 @@ class YOLOv11TFLiteDetector {
 
     private fun postprocess(
         output: Array<FloatArray>,
-        originalSize: Pair<Int, Int>,
+        info: LetterboxResult,
         confThreshold: Float,
         iouThreshold: Float,
         maxDetections: Int,
     ): List<YOLODetection> {
-        val (w0, h0) = originalSize
-        val scaleToSrcX = w0 / inputSize.toFloat()
-        val scaleToSrcY = h0 / inputSize.toFloat()
+        val (w0, h0) = info.imgsz_ori
+        val (x0, y0) = info.x0y0
+        val scale = 1 / info.ratio
 
         val transposed = transposeOutput(output)
 
@@ -148,10 +149,10 @@ class YOLOv11TFLiteDetector {
         )
 
         return keepIndices.take(maxDetections).map { idx ->
-            var x1 = boxesXYXY[idx][0] * scaleToSrcX
-            var y1 = boxesXYXY[idx][1] * scaleToSrcY
-            var x2 = boxesXYXY[idx][2] * scaleToSrcX
-            var y2 = boxesXYXY[idx][3] * scaleToSrcY
+            var x1 = (boxesXYXY[idx][0] - x0) * scale
+            var y1 = (boxesXYXY[idx][1] - y0) * scale
+            var x2 = (boxesXYXY[idx][2] - x0) * scale
+            var y2 = (boxesXYXY[idx][3] - y0) * scale
 
             x1 = x1.coerceIn(0f, w0.toFloat())
             y1 = y1.coerceIn(0f, h0.toFloat())
@@ -162,7 +163,7 @@ class YOLOv11TFLiteDetector {
             YOLODetection(
                 classId = classId,
                 className = ChefClassNames.nameEn(classId),
-                chineseName = ChefClassNames.nameCn(classId),
+                chineseName = ChefClassNames.nameEn(classId),
                 confidence = scores[idx],
                 boundingBox = RectF(x1, y1, x2, y2),
             )
