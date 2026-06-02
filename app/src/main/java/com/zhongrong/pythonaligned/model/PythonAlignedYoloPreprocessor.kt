@@ -19,6 +19,7 @@ internal fun preprocessBitmapPythonAligned(
     val w0 = bitmap.width
     val h0 = bitmap.height
     val scaled = Bitmap.createScaledBitmap(bitmap, targetSize, targetSize, true)
+    // createScaledBitmap 在尺寸相同时可能返回入参本身，切勿 recycle。
 
     val buffer = ByteBuffer.allocateDirect(4 * targetSize * targetSize * 3)
     buffer.order(ByteOrder.nativeOrder())
@@ -41,8 +42,7 @@ internal fun preprocessBitmapPythonAligned(
 
 /** 仪器测试同款：仅生成 float buffer，不保留 scaled bitmap。 */
 fun preprocessAsPythonScript(bitmap: Bitmap, targetSize: Int = 640): ByteBuffer {
-    val (buffer, _, scaled) = preprocessBitmapPythonAligned(bitmap, targetSize)
-    scaled.recycle()
+    val (buffer, _, _) = preprocessBitmapPythonAligned(bitmap, targetSize)
     return buffer
 }
 
@@ -117,11 +117,6 @@ fun letterbox(bitmap: Bitmap, newWidth: Int, newHeight: Int, paddingValue: Int =
 
     buffer.rewind()
 
-
-    // 清理临时 Bitmap（可选）
-    if (scaledBitmap != resultBitmap) {
-        scaledBitmap.recycle()
-    }
-
+    // 勿 recycle scaledBitmap：尺寸与源图相同时 createScaledBitmap 可能返回入参本身。
     return LetterboxResult(bitmap=resultBitmap, ratio=r, x0y0=Pair(left, top), buffer=buffer, imgsz_ori=Pair(w0, h0))
 }

@@ -23,13 +23,20 @@ data class DetectRunResult(
     val allDetections: List<YOLODetection>,
     val highlightedDetections: List<YOLODetection>,
     val preprocessNote: String = "Python 对齐: 拉伸 640×640 → RGB /255 → float HWC",
+    val preprocessMs: Long = 0L,
+    val inferenceMs: Long = 0L,
+    val postprocessMs: Long = 0L,
 ) {
+    val pipelineMs: Long get() = preprocessMs + inferenceMs + postprocessMs
+
     fun toResultLines(): List<String> = buildList {
         add("=== Python 对齐推理结果 ===")
         add("图片: $imageLabel ($imageSize)")
         add("模型: $modelPath")
         add("模型参数: $modelInfo")
         add("前处理: $preprocessNote")
+        add("模型推理耗时: ${inferenceMs} ms")
+        add("检测全流程耗时: ${pipelineMs} ms (前处理 ${preprocessMs} + 推理 ${inferenceMs} + 后处理 ${postprocessMs})")
         add("推理阈值: conf≥${config.confThreshold}, IoU=${config.iouThreshold}, max=${config.maxDetections}")
         add("")
         add("NMS 后全部检测 (${allDetections.size}):")
@@ -58,6 +65,7 @@ class PythonAlignedDetectRunner(private val context: Context) {
     }
 
     private val detector = YOLOv11TFLiteDetector()
+    private val detectLock = Any()
 
     var modelReady: Boolean = false
         private set
@@ -95,8 +103,11 @@ class PythonAlignedDetectRunner(private val context: Context) {
     /** 从 assets 加载默认测试图（需存在 [DEFAULT_IMAGE_ASSET]）。 */
     fun loadDefaultAssetImage(assetName: String = DEFAULT_IMAGE_ASSET): Pair<Bitmap?, String?> {
         return try {
+            val options = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
             context.assets.open(assetName).use { stream ->
-                BitmapFactory.decodeStream(stream) to null
+                BitmapFactory.decodeStream(stream, null, options) to null
             }
         } catch (_: Exception) {
             null to "assets 中未找到 $assetName"
@@ -109,22 +120,25 @@ class PythonAlignedDetectRunner(private val context: Context) {
         bitmap: Bitmap,
         imageLabel: String,
         config: DetectConfig = DetectConfig(),
-    ): DetectRunResult {
-        val all = detector.detect(
+    ): DetectRunResult = synchronized(detectLock) {
+        val outcome = detector.detect(
             bitmap = bitmap,
             confThreshold = config.confThreshold,
             iouThreshold = config.iouThreshold,
             maxDetections = config.maxDetections,
         )
-        val high = all.filter { it.confidence > config.highlightConfMin }
-        return DetectRunResult(
+        val high = outcome.detections.filter { it.confidence > config.highlightConfMin }
+        DetectRunResult(
             imageLabel = imageLabel,
             imageSize = "${bitmap.width}×${bitmap.height}",
             modelPath = modelPath ?: "（未加载）",
             modelInfo = detector.modelInfo(),
             config = config,
-            allDetections = all,
+            allDetections = outcome.detections,
             highlightedDetections = high,
+            preprocessMs = outcome.preprocessMs,
+            inferenceMs = outcome.inferenceMs,
+            postprocessMs = outcome.postprocessMs,
         )
     }
 

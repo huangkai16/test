@@ -10,7 +10,10 @@ import com.zhongrong.pythonaligned.PythonAlignedApplication
 import com.zhongrong.pythonaligned.model.DetectConfig
 import com.zhongrong.pythonaligned.model.DetectionOverlayDrawer
 import com.zhongrong.pythonaligned.model.PythonAlignedDetectRunner
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,6 +38,8 @@ data class MainUiState(
     val isRunning: Boolean = false,
     val resultLines: List<String> = emptyList(),
     val errorMessage: String? = null,
+    /** 预览/结果图变更时递增，供 Compose key 绑定，避免绘制已回收的 Bitmap。 */
+    val imageEpoch: Long = 0L,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -45,14 +50,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
+    private var detectJob: Job? = null
+
     init {
         viewModelScope.launch { loadBundledAssetsAndRun() }
+    }
+
+    private fun cancelDetection() {
+        detectJob?.cancel()
+        detectJob = null
     }
 
     fun onModelSelected(uri: Uri) {
         viewModelScope.launch {
             _uiState.update { old ->
-                old.resultBitmap?.recycle()
                 old.copy(
                     modelUri = uri,
                     modelError = null,
@@ -79,9 +90,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onImageSelected(uri: Uri) {
         viewModelScope.launch {
+            cancelDetection()
             _uiState.update { old ->
-                old.resultBitmap?.recycle()
-                old.copy(imageUri = uri, errorMessage = null, resultLines = emptyList(), resultBitmap = null)
+                old.copy(
+                    imageUri = uri,
+                    errorMessage = null,
+                    resultLines = emptyList(),
+                    resultBitmap = null,
+                    isRunning = false,
+                )
             }
             val bitmap = loadBitmap(uri)
             if (bitmap == null) {
@@ -90,9 +107,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             val label = uri.lastPathSegment ?: uri.toString()
             _uiState.update { old ->
-                old.previewBitmap?.recycle()
-                old.resultBitmap?.recycle()
-                old.copy(previewBitmap = bitmap, imageLabel = label, resultBitmap = null)
+                old.copy(
+                    previewBitmap = bitmap,
+                    imageLabel = label,
+                    resultBitmap = null,
+                    imageEpoch = old.imageEpoch + 1,
+                )
+            }
+            if (runner.modelReady) {
+                detectJob = viewModelScope.launch { runDetectionInternal() }
             }
         }
     }
@@ -120,31 +143,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(errorMessage = state.modelError ?: "请先选择模型文件") }
             return
         }
-        viewModelScope.launch { runDetectionInternal() }
+        cancelDetection()
+        detectJob = viewModelScope.launch { runDetectionInternal() }
     }
 
     private suspend fun loadBundledAssetsAndRun() {
+        cancelDetection()
         val modelError = withContext(Dispatchers.IO) { runner.loadDefaultAssetModel() }
         val (bitmap, imageError) = withContext(Dispatchers.IO) { runner.loadDefaultAssetImage() }
 
         _uiState.update { old ->
-            old.previewBitmap?.recycle()
-            old.resultBitmap?.recycle()
+            val keepUserImage = old.imageUri != null
             old.copy(
                 modelReady = runner.modelReady,
                 modelPath = runner.modelPath,
                 modelInfo = if (runner.modelReady) runner.modelInfo() else "",
                 modelError = modelError,
-                previewBitmap = bitmap,
-                resultBitmap = null,
-                imageLabel = PythonAlignedDetectRunner.DEFAULT_IMAGE_ASSET,
-                errorMessage = imageError,
-                resultLines = emptyList(),
+                previewBitmap = if (keepUserImage) old.previewBitmap else bitmap,
+                resultBitmap = if (keepUserImage) old.resultBitmap else null,
+                imageLabel = if (keepUserImage) old.imageLabel else PythonAlignedDetectRunner.DEFAULT_IMAGE_ASSET,
+                errorMessage = if (keepUserImage) old.errorMessage else imageError,
+                resultLines = if (keepUserImage) old.resultLines else emptyList(),
+                imageEpoch = if (keepUserImage) old.imageEpoch else old.imageEpoch + 1,
             )
         }
 
-        if (runner.modelReady && bitmap != null) {
-            runDetectionInternal()
+        if (runner.modelReady && bitmap != null && _uiState.value.imageUri == null) {
+            detectJob = viewModelScope.launch { runDetectionInternal() }
         }
     }
 
@@ -152,6 +177,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = _uiState.value
         val bitmap = state.previewBitmap ?: return
         if (bitmap.isRecycled || !state.modelReady) return
+        val epoch = state.imageEpoch
+
+        val snapshot = withContext(Dispatchers.IO) {
+            if (bitmap.isRecycled) null else bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        }
+        if (snapshot == null) {
+            _uiState.update { it.copy(errorMessage = "无法复制图片用于推理") }
+            return
+        }
 
         val config = DetectConfig(
             confThreshold = state.confThreshold,
@@ -163,23 +197,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(isRunning = true, errorMessage = null, resultLines = emptyList(), resultBitmap = null) }
         try {
             val result = withContext(Dispatchers.IO) {
-                runner.run(bitmap, state.imageLabel ?: "picked", config)
+                ensureActive()
+                runner.run(snapshot, state.imageLabel ?: "picked", config)
             }
             val annotated = withContext(Dispatchers.IO) {
+                ensureActive()
                 DetectionOverlayDrawer.draw(
-                    source = bitmap,
+                    source = snapshot,
                     detections = result.allDetections,
                     highlightConfMin = config.highlightConfMin,
                 )
             }
+            if (_uiState.value.imageEpoch != epoch) {
+                _uiState.update {
+                    it.copy(isRunning = false, errorMessage = "图片已更换，本次推理结果已丢弃")
+                }
+                return
+            }
             _uiState.update { old ->
-                old.resultBitmap?.recycle()
                 old.copy(
                     isRunning = false,
                     resultLines = result.toResultLines(),
                     resultBitmap = annotated,
+                    imageEpoch = old.imageEpoch + 1,
                 )
             }
+        } catch (e: CancellationException) {
+            _uiState.update { it.copy(isRunning = false) }
+            throw e
         } catch (e: Exception) {
             _uiState.update {
                 it.copy(isRunning = false, errorMessage = "推理失败: ${e.message}")
@@ -188,14 +233,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun loadBitmap(uri: Uri): Bitmap? = withContext(Dispatchers.IO) {
+        val options = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
         getApplication<Application>().contentResolver.openInputStream(uri)?.use { stream ->
-            BitmapFactory.decodeStream(stream)
+            BitmapFactory.decodeStream(stream, null, options)
         }
     }
 
     override fun onCleared() {
-        _uiState.value.previewBitmap?.recycle()
-        _uiState.value.resultBitmap?.recycle()
+        cancelDetection()
         super.onCleared()
     }
 }

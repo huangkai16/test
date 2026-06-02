@@ -61,32 +61,48 @@ class YOLOv11TFLiteDetector {
         confThreshold: Float = 0.3f,
         iouThreshold: Float = 0.5f,
         maxDetections: Int = 50,
-    ): List<YOLODetection> {
-        if (!isInitialized) return emptyList()
+    ): YOLODetectOutcome {
+        if (!isInitialized) return YOLODetectOutcome.EMPTY
 
         return try {
-//            val (inputBuffer, originalSize, _) = preprocessBitmapPythonAligned(bitmap, inputSize)
+            val preprocessStartNs = System.nanoTime()
             val result = letterbox(bitmap, inputSize, inputSize)
             val inputBuffer = result.buffer
+            val preprocessMs = elapsedMs(preprocessStartNs)
+
             val output = Array(1) {
                 Array(4 + numClasses) { FloatArray(numDetections) }
             }
 
-            val intp = interpreter ?: return emptyList()
+            val intp = interpreter ?: return YOLODetectOutcome.EMPTY
             inputBuffer.rewind()
+            val inferenceStartNs = System.nanoTime()
             intp.run(inputBuffer, output)
+            val inferenceMs = elapsedMs(inferenceStartNs)
 
-            postprocess(
+            val postprocessStartNs = System.nanoTime()
+            val detections = postprocess(
                 output[0],
                 result,
                 confThreshold,
                 iouThreshold,
                 maxDetections,
             )
-        } catch (_: Exception) {
-            emptyList()
+            val postprocessMs = elapsedMs(postprocessStartNs)
+
+            YOLODetectOutcome(
+                detections = detections,
+                preprocessMs = preprocessMs,
+                inferenceMs = inferenceMs,
+                postprocessMs = postprocessMs,
+            )
+        } catch (e: Exception) {
+            throw IllegalStateException("TFLite 推理异常: ${e.message}", e)
         }
     }
+
+    private fun elapsedMs(startNs: Long): Long =
+        (System.nanoTime() - startNs) / 1_000_000L
 
     private fun postprocess(
         output: Array<FloatArray>,
@@ -223,6 +239,17 @@ class YOLOv11TFLiteDetector {
             val fileChannel = inputStream.channel
             return fileChannel.map(FileChannel.MapMode.READ_ONLY, 0, file.length())
         }
+    }
+}
+
+data class YOLODetectOutcome(
+    val detections: List<YOLODetection>,
+    val preprocessMs: Long,
+    val inferenceMs: Long,
+    val postprocessMs: Long,
+) {
+    companion object {
+        val EMPTY = YOLODetectOutcome(emptyList(), 0L, 0L, 0L)
     }
 }
 

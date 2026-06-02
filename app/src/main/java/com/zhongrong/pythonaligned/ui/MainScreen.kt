@@ -27,6 +27,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -131,12 +133,20 @@ fun MainScreen(viewModel: MainViewModel) {
                 }
             }
 
+            val showResult = state.resultBitmap != null
             val displayBitmap = state.resultBitmap ?: state.previewBitmap
-            displayBitmap?.let {
-                PreviewCard(
-                    bitmap = it,
-                    title = if (state.resultBitmap != null) "检测结果（NMS 框已映射回原图）" else "原图预览",
-                )
+            if (displayBitmap != null && !displayBitmap.isRecycled) {
+                key(state.imageEpoch, showResult) {
+                    PreviewCard(
+                        bitmap = displayBitmap,
+                        imageEpoch = state.imageEpoch,
+                        title = if (showResult) {
+                            "检测结果（NMS 框已映射回原图）"
+                        } else {
+                            "原图预览"
+                        },
+                    )
+                }
             }
 
             state.errorMessage?.let {
@@ -179,7 +189,7 @@ private fun ThresholdField(
 }
 
 @Composable
-private fun PreviewCard(bitmap: Bitmap, title: String) {
+private fun PreviewCard(bitmap: Bitmap, imageEpoch: Long, title: String) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column {
             Text(
@@ -187,8 +197,12 @@ private fun PreviewCard(bitmap: Bitmap, title: String) {
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp),
             )
+            val imageBitmap = remember(imageEpoch, bitmap) {
+                if (bitmap.isRecycled) null else bitmap.asImageBitmap()
+            }
+            if (imageBitmap == null) return@Column
             Image(
-                bitmap = bitmap.asImageBitmap(),
+                bitmap = imageBitmap,
                 contentDescription = title,
                 modifier = Modifier
                     .fillMaxWidth()
