@@ -23,6 +23,11 @@ class YOLOv11TFLiteDetector {
     private var inputSize = 640
     private var numClasses = 7
     private var numDetections = 8400
+    private var classNames: ModelClassNames = ChefClassNames
+
+    fun setClassNames(names: ModelClassNames) {
+        classNames = names
+    }
 
     fun initialize(modelFile: File): Boolean {
         if (!modelFile.isFile) return false
@@ -178,8 +183,8 @@ class YOLOv11TFLiteDetector {
             val classId = classIds[idx]
             YOLODetection(
                 classId = classId,
-                className = ChefClassNames.nameEn(classId),
-                chineseName = ChefClassNames.nameEn(classId),
+                className = classNames.nameEn(classId),
+                chineseName = classNames.nameCn(classId),
                 confidence = scores[idx],
                 boundingBox = RectF(x1, y1, x2, y2),
             )
@@ -269,8 +274,14 @@ data class YOLODetection(
     }
 }
 
+/** 按模型切换类别名解析（序号与训练 yaml 数组下标一致）。 */
+interface ModelClassNames {
+    fun nameEn(classId: Int): String
+    fun nameCn(classId: Int): String
+}
+
 /** 7 类 chef 模型标签；其他 classId 回退为 class_N。 */
-object ChefClassNames {
+object ChefClassNames : ModelClassNames {
     private val EN = arrayOf(
         "apron", "chef_hat", "incorrectly_mask", "no_face_protective",
         "with_mask", "without_apron", "without_cap",
@@ -280,6 +291,31 @@ object ChefClassNames {
         "正确戴口罩", "未穿围裙", "未戴帽子",
     )
 
-    fun nameEn(classId: Int): String = EN.getOrElse(classId) { "class_$classId" }
-    fun nameCn(classId: Int): String = CN.getOrElse(classId) { "类别_$classId" }
+    override fun nameEn(classId: Int): String = EN.getOrElse(classId) { "class_$classId" }
+    override fun nameCn(classId: Int): String = CN.getOrElse(classId) { "类别_$classId" }
+}
+
+/**
+ * 9 类 hand 模型标签，序号与训练 yaml 一致：
+ * ['nail_long', 'nail_art', 'ring', 'bracelet', 'watch', 'wound', 'bandage', 'rash', 'chickenpox']
+ */
+object HandClassNames : ModelClassNames {
+    private val EN = arrayOf(
+        "nail_long",    // 0
+        "nail_art",     // 1
+        "ring",         // 2
+        "bracelet",     // 3
+        "watch",        // 4
+        "wound",        // 5
+        "bandage",      // 6
+        "rash",         // 7
+        "chickenpox",   // 8
+    )
+    private val CN = arrayOf(
+        "长指甲", "美甲", "戒指", "手链", "手表",
+        "伤口", "绷带", "皮疹", "水痘",
+    )
+
+    override fun nameEn(classId: Int): String = EN.getOrElse(classId) { "class_$classId" }
+    override fun nameCn(classId: Int): String = CN.getOrElse(classId) { "类别_$classId" }
 }

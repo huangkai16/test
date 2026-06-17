@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -21,6 +23,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -33,8 +36,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.zhongrong.pythonaligned.model.BundledModel
 import com.zhongrong.pythonaligned.viewmodel.MainViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -42,12 +47,21 @@ import com.zhongrong.pythonaligned.viewmodel.MainViewModel
 fun MainScreen(viewModel: MainViewModel) {
     val state by viewModel.uiState.collectAsState()
 
-    val pickModel = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) viewModel.onModelSelected(uri)
-    }
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.onImageSelected(uri)
     }
+    val pickBatchInputDir = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) viewModel.onBatchInputDirSelected(uri)
+    }
+    val pickBatchOutputDir = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) viewModel.onBatchOutputDirSelected(uri)
+    }
+
+    val busy = state.isRunning || state.isBatchRunning
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Python 对齐 YOLO 推理") }) },
@@ -62,7 +76,7 @@ fun MainScreen(viewModel: MainViewModel) {
         ) {
             Text(
                 text = if (state.modelReady) {
-                    "模型已加载\n${state.modelPath}\n${state.modelInfo}"
+                    "模型已加载: ${state.selectedModel.label}\n${state.modelPath}\n${state.modelInfo}"
                 } else {
                     "模型未加载${state.modelError?.let { ": $it" } ?: ""}"
                 },
@@ -71,19 +85,36 @@ fun MainScreen(viewModel: MainViewModel) {
                 style = MaterialTheme.typography.bodyMedium,
             )
 
+            Text("内置模型", style = MaterialTheme.typography.titleSmall)
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectableGroup(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Button(
-                    onClick = { pickModel.launch("*/*") },
-                    modifier = Modifier.weight(1f),
-                ) { Text("选择 .tflite 模型") }
-                Button(
-                    onClick = viewModel::tryLoadAssetModel,
-                    modifier = Modifier.weight(1f),
-                ) { Text("重新加载 assets") }
+                BundledModel.entries.forEach { model ->
+                    Row(
+                        modifier = Modifier
+                            .selectable(
+                                selected = state.selectedModel == model,
+                                onClick = { viewModel.selectBundledModel(model) },
+                                role = Role.RadioButton,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = state.selectedModel == model,
+                            onClick = null,
+                        )
+                        Text(model.label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
             }
+
+            Button(
+                onClick = viewModel::tryLoadAssetModel,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("重新加载 assets") }
 
             Text("推理参数", style = MaterialTheme.typography.titleSmall)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -117,9 +148,56 @@ fun MainScreen(viewModel: MainViewModel) {
                 ) { Text("选择图片") }
                 Button(
                     onClick = viewModel::runDetection,
-                    enabled = !state.isRunning && state.previewBitmap != null && state.modelReady,
+                    enabled = !busy && state.previewBitmap != null && state.modelReady,
                     modifier = Modifier.weight(1f),
                 ) { Text(if (state.isRunning) "推理中…" else "开始推理") }
+            }
+
+            Text("批量推理", style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = buildString {
+                    append("输入: ")
+                    append(state.batchInputDirLabel ?: "未选择")
+                    append("\n输出: ")
+                    append(state.batchOutputDirLabel ?: "未选择")
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = { pickBatchInputDir.launch(null) },
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("输入目录") }
+                Button(
+                    onClick = { pickBatchOutputDir.launch(null) },
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("输出目录") }
+            }
+            Button(
+                onClick = viewModel::runBatchInference,
+                enabled = !busy &&
+                    state.modelReady &&
+                    state.batchInputDirUri != null &&
+                    state.batchOutputDirUri != null,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.isBatchRunning) "批量推理中…" else "开始批量推理")
+            }
+
+            if (state.isBatchRunning && state.batchProgress != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
+                    Text(state.batchProgress!!)
+                }
             }
 
             if (state.isRunning) {
@@ -129,7 +207,7 @@ fun MainScreen(viewModel: MainViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
-                    Text("Python 拉伸 640×640 推理中…")
+                    Text("Letterbox 推理中…")
                 }
             }
 
@@ -151,6 +229,19 @@ fun MainScreen(viewModel: MainViewModel) {
 
             state.errorMessage?.let {
                 Text(it, color = MaterialTheme.colorScheme.error)
+            }
+
+            if (state.batchResultLines.isNotEmpty()) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("批量推理输出", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(8.dp))
+                        state.batchResultLines.forEach { line ->
+                            if (line.isEmpty()) Spacer(Modifier.height(4.dp))
+                            else Text(line, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
             }
 
             if (state.resultLines.isNotEmpty()) {

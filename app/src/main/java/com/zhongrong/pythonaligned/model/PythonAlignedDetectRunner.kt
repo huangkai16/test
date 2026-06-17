@@ -57,11 +57,21 @@ data class DetectRunResult(
     }
 }
 
+/** 内置 assets 模型（共 2 个，界面勾选切换）。 */
+enum class BundledModel(
+    val assetFileName: String,
+    val label: String,
+    val classNames: ModelClassNames,
+) {
+    CHEF("chef.tflite", "chef 厨师穿戴", ChefClassNames),
+    HAND("hand.tflite", "hand 手部", HandClassNames),
+}
+
 class PythonAlignedDetectRunner(private val context: Context) {
 
     companion object {
-        const val DEFAULT_MODEL_ASSET = "chef.tflite"
-        const val DEFAULT_IMAGE_ASSET = "test.jpg"
+        val DEFAULT_BUNDLED_MODEL = BundledModel.CHEF
+        const val DEFAULT_IMAGE_ASSET = "img_1.png"
     }
 
     private val detector = YOLOv11TFLiteDetector()
@@ -73,13 +83,12 @@ class PythonAlignedDetectRunner(private val context: Context) {
     var modelPath: String? = null
         private set
 
-    fun loadModelFromUri(uri: Uri): String? {
-        val dest = copyUriToCache(uri, "model.tflite") ?: return "无法读取模型文件"
-        return loadModelFromFile(dest)
-    }
+    var loadedBundledModel: BundledModel? = null
+        private set
 
-    fun loadModelFromFile(file: File): String? {
+    fun loadModelFromFile(file: File, classNames: ModelClassNames = ChefClassNames): String? {
         modelReady = detector.initialize(file)
+        if (modelReady) detector.setClassNames(classNames)
         modelPath = if (modelReady) file.absolutePath else null
         return when {
             modelReady -> null
@@ -87,15 +96,19 @@ class PythonAlignedDetectRunner(private val context: Context) {
         }
     }
 
-    /** 从 assets 加载默认模型（需存在 [DEFAULT_MODEL_ASSET]）。 */
-    fun loadDefaultAssetModel(assetName: String = DEFAULT_MODEL_ASSET): String? {
+    /** 从 assets 加载指定内置模型。 */
+    fun loadBundledAssetModel(model: BundledModel = DEFAULT_BUNDLED_MODEL): String? {
+        val assetName = model.assetFileName
         return try {
             context.assets.open(assetName).use { input ->
                 val dest = File(context.cacheDir, assetName)
                 dest.outputStream().use { output -> input.copyTo(output) }
-                loadModelFromFile(dest)
+                loadModelFromFile(dest, model.classNames).also { error ->
+                    loadedBundledModel = if (error == null) model else null
+                }
             }
         } catch (_: Exception) {
+            loadedBundledModel = null
             "assets 中未找到 $assetName"
         }
     }

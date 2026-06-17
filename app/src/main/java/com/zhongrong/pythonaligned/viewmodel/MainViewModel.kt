@@ -1,12 +1,16 @@
 package com.zhongrong.pythonaligned.viewmodel
 
 import android.app.Application
+import android.content.Intent
+import androidx.documentfile.provider.DocumentFile
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zhongrong.pythonaligned.PythonAlignedApplication
+import com.zhongrong.pythonaligned.model.BatchDirectoryInference
+import com.zhongrong.pythonaligned.model.BundledModel
 import com.zhongrong.pythonaligned.model.DetectConfig
 import com.zhongrong.pythonaligned.model.DetectionOverlayDrawer
 import com.zhongrong.pythonaligned.model.PythonAlignedDetectRunner
@@ -22,7 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class MainUiState(
-    val modelUri: Uri? = null,
+    val selectedModel: BundledModel = PythonAlignedDetectRunner.DEFAULT_BUNDLED_MODEL,
     val modelPath: String? = null,
     val modelReady: Boolean = false,
     val modelInfo: String = "",
@@ -36,6 +40,13 @@ data class MainUiState(
     val maxDetections: Int = 50,
     val highlightConfMin: Float = 0.8f,
     val isRunning: Boolean = false,
+    val isBatchRunning: Boolean = false,
+    val batchInputDirUri: Uri? = null,
+    val batchInputDirLabel: String? = null,
+    val batchOutputDirUri: Uri? = null,
+    val batchOutputDirLabel: String? = null,
+    val batchProgress: String? = null,
+    val batchResultLines: List<String> = emptyList(),
     val resultLines: List<String> = emptyList(),
     val errorMessage: String? = null,
     /** 预览/结果图变更时递增，供 Compose key 绑定，避免绘制已回收的 Bitmap。 */
@@ -51,6 +62,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     private var detectJob: Job? = null
+    private var batchJob: Job? = null
+
+    private val app get() = getApplication<Application>()
 
     init {
         viewModelScope.launch { loadBundledAssetsAndRun() }
@@ -61,27 +75,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         detectJob = null
     }
 
-    fun onModelSelected(uri: Uri) {
-        viewModelScope.launch {
-            _uiState.update { old ->
-                old.copy(
-                    modelUri = uri,
-                    modelError = null,
-                    modelReady = false,
-                    resultLines = emptyList(),
-                    resultBitmap = null,
-                )
-            }
-            val error = withContext(Dispatchers.IO) { runner.loadModelFromUri(uri) }
-            _uiState.update {
-                it.copy(
-                    modelReady = runner.modelReady,
-                    modelPath = runner.modelPath,
-                    modelInfo = if (runner.modelReady) runner.modelInfo() else "",
-                    modelError = error,
-                )
-            }
+    private fun cancelBatch() {
+        batchJob?.cancel()
+        batchJob = null
+    }
+
+    private fun cancelAllJobs() {
+        cancelDetection()
+        cancelBatch()
+    }
+
+    fun onBatchInputDirSelected(uri: Uri) {
+        persistTreeUri(uri, readOnly = true)
+        val label = treeUriLabel(uri)
+        _uiState.update {
+            it.copy(
+                batchInputDirUri = uri,
+                batchInputDirLabel = label,
+                batchResultLines = emptyList(),
+                errorMessage = null,
+            )
         }
+    }
+
+    fun onBatchOutputDirSelected(uri: Uri) {
+        persistTreeUri(uri, readOnly = false)
+        val label = treeUriLabel(uri)
+        _uiState.update {
+            it.copy(
+                batchOutputDirUri = uri,
+                batchOutputDirLabel = label,
+                batchResultLines = emptyList(),
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun runBatchInference() {
+        val state = _uiState.value
+        if (!state.modelReady) {
+            _uiState.update { it.copy(errorMessage = state.modelError ?: "请先加载模型") }
+            return
+        }
+        val inputUri = state.batchInputDirUri
+        val outputUri = state.batchOutputDirUri
+        if (inputUri == null || outputUri == null) {
+            _uiState.update { it.copy(errorMessage = "请先选择输入目录和输出目录") }
+            return
+        }
+        cancelAllJobs()
+        batchJob = viewModelScope.launch { runBatchInternal(inputUri, outputUri) }
+    }
+
+    fun selectBundledModel(model: BundledModel) {
+        if (_uiState.value.selectedModel == model && runner.modelReady) return
+        viewModelScope.launch { loadBundledModelAndMaybeRun(model) }
     }
 
     fun tryLoadAssetModel() {
@@ -90,7 +138,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onImageSelected(uri: Uri) {
         viewModelScope.launch {
-            cancelDetection()
+            cancelAllJobs()
             _uiState.update { old ->
                 old.copy(
                     imageUri = uri,
@@ -147,28 +195,123 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         detectJob = viewModelScope.launch { runDetectionInternal() }
     }
 
+    private suspend fun runBatchInternal(inputUri: Uri, outputUri: Uri) {
+        val state = _uiState.value
+        val config = DetectConfig(
+            confThreshold = state.confThreshold,
+            iouThreshold = state.iouThreshold,
+            maxDetections = state.maxDetections,
+            highlightConfMin = state.highlightConfMin,
+        )
+
+        _uiState.update {
+            it.copy(
+                isBatchRunning = true,
+                batchProgress = "准备中…",
+                batchResultLines = emptyList(),
+                errorMessage = null,
+            )
+        }
+
+        try {
+            val result = withContext(Dispatchers.IO) {
+                BatchDirectoryInference.run(
+                    context = app,
+                    runner = runner,
+                    inputTreeUri = inputUri,
+                    outputTreeUri = outputUri,
+                    config = config,
+                    onProgress = { current, total, fileName ->
+                        _uiState.update {
+                            it.copy(batchProgress = "$current/$total  $fileName")
+                        }
+                    },
+                )
+            }
+            _uiState.update {
+                it.copy(
+                    isBatchRunning = false,
+                    batchProgress = null,
+                    batchResultLines = result.toResultLines(),
+                )
+            }
+        } catch (e: CancellationException) {
+            _uiState.update {
+                it.copy(isBatchRunning = false, batchProgress = null)
+            }
+            throw e
+        } catch (e: Exception) {
+            _uiState.update {
+                it.copy(
+                    isBatchRunning = false,
+                    batchProgress = null,
+                    errorMessage = "批量推理失败: ${e.message}",
+                )
+            }
+        }
+    }
+
+    private fun persistTreeUri(uri: Uri, readOnly: Boolean) {
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+            if (readOnly) 0 else Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        try {
+            app.contentResolver.takePersistableUriPermission(uri, flags)
+        } catch (_: SecurityException) {
+            // 部分系统/目录可能无法持久化，当次会话仍可用
+        }
+    }
+
+    private fun treeUriLabel(uri: Uri): String {
+        return DocumentFile.fromTreeUri(app, uri)?.name
+            ?: uri.lastPathSegment
+            ?: uri.toString()
+    }
+
     private suspend fun loadBundledAssetsAndRun() {
-        cancelDetection()
-        val modelError = withContext(Dispatchers.IO) { runner.loadDefaultAssetModel() }
-        val (bitmap, imageError) = withContext(Dispatchers.IO) { runner.loadDefaultAssetImage() }
+        loadBundledModelAndMaybeRun(_uiState.value.selectedModel, reloadImage = true)
+    }
+
+    private suspend fun loadBundledModelAndMaybeRun(
+        model: BundledModel,
+        reloadImage: Boolean = false,
+    ) {
+        cancelAllJobs()
+        val modelError = withContext(Dispatchers.IO) { runner.loadBundledAssetModel(model) }
+
+        val imageResult = if (reloadImage) {
+            withContext(Dispatchers.IO) { runner.loadDefaultAssetImage() }
+        } else {
+            null
+        }
 
         _uiState.update { old ->
             val keepUserImage = old.imageUri != null
+            val (bitmap, imageError) = if (reloadImage && !keepUserImage) {
+                imageResult ?: (null to null)
+            } else {
+                old.previewBitmap to old.errorMessage
+            }
             old.copy(
+                selectedModel = model,
                 modelReady = runner.modelReady,
                 modelPath = runner.modelPath,
                 modelInfo = if (runner.modelReady) runner.modelInfo() else "",
                 modelError = modelError,
-                previewBitmap = if (keepUserImage) old.previewBitmap else bitmap,
-                resultBitmap = if (keepUserImage) old.resultBitmap else null,
-                imageLabel = if (keepUserImage) old.imageLabel else PythonAlignedDetectRunner.DEFAULT_IMAGE_ASSET,
-                errorMessage = if (keepUserImage) old.errorMessage else imageError,
-                resultLines = if (keepUserImage) old.resultLines else emptyList(),
-                imageEpoch = if (keepUserImage) old.imageEpoch else old.imageEpoch + 1,
+                previewBitmap = if (reloadImage && keepUserImage) old.previewBitmap else if (reloadImage) bitmap else old.previewBitmap,
+                resultBitmap = if (reloadImage || model != old.selectedModel) null else old.resultBitmap,
+                imageLabel = if (reloadImage && keepUserImage) old.imageLabel else if (reloadImage) PythonAlignedDetectRunner.DEFAULT_IMAGE_ASSET else old.imageLabel,
+                errorMessage = if (reloadImage && keepUserImage) old.errorMessage else if (reloadImage) imageError else old.errorMessage,
+                resultLines = if (model != old.selectedModel || reloadImage) emptyList() else old.resultLines,
+                imageEpoch = when {
+                    reloadImage && !keepUserImage -> old.imageEpoch + 1
+                    model != old.selectedModel -> old.imageEpoch + 1
+                    else -> old.imageEpoch
+                },
             )
         }
 
-        if (runner.modelReady && bitmap != null && _uiState.value.imageUri == null) {
+        val state = _uiState.value
+        if (runner.modelReady && state.previewBitmap != null && !state.isRunning) {
             detectJob = viewModelScope.launch { runDetectionInternal() }
         }
     }
@@ -242,7 +385,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        cancelDetection()
+        cancelAllJobs()
         super.onCleared()
     }
 }
